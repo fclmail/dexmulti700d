@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Polygon Arbitrage Bot</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.6.2/dist/ethers.umd.min.js"></script>
+  <style>
+    body { background-color: #0d1b2a; color: #fff; font-family: Arial, sans-serif; padding: 20px; }
+    .card { background-color: #1b263b; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+    input, select, button { margin: 5px 0; padding: 10px; border-radius: 5px; border: none; }
+    button { background-color: #415a77; color: white; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #ffffff33; padding: 8px; text-align: center; }
+    .green { color: #00ff99; }
+    .red { color: #ff6666; }
+  </style>
+</head>
+<body>
+
+<h1>Polygon Arbitrage Bot</h1>
+
+<div class="card">
+  <button onclick="connectMetaMask()">Connect MetaMask</button>
+  <p><strong>Wallet:</strong> <span id="walletAddress">Not connected</span></p>
+  <p><strong>USDC Balance:</strong> <span id="usdcBalance">0</span></p>
+  <p><strong>Token Balance:</strong> <span id="tokenBalance">N/A</span></p>
+</div>
+
+<div class="card">
+  <label>ERC20 Token Address:</label>
+  <input type="text" id="tokenAddress" placeholder="0x...">
+  <label>Quantity in USDC:</label>
+  <input type="number" id="usdcAmount" placeholder="Amount to trade">
+  <label>Buy Router:</label>
+  <select id="buyRouter">
+    <option value="QuickSwap">QuickSwap</option>
+    <option value="SushiSwap">SushiSwap</option>
+    <option value="ApeSwap">ApeSwap</option>
+    <option value="Dfyn">Dfyn</option>
+    <option value="WaultSwap">WaultSwap</option>
+    <option value="Polycat">Polycat</option>
+    <option value="CafeSwap">CafeSwap</option>
+  </select>
+  <label>Sell Router:</label>
+  <select id="sellRouter">
+    <option value="QuickSwap">QuickSwap</option>
+    <option value="SushiSwap">SushiSwap</option>
+    <option value="ApeSwap">ApeSwap</option>
+    <option value="Dfyn">Dfyn</option>
+    <option value="WaultSwap">WaultSwap</option>
+    <option value="Polycat">Polycat</option>
+    <option value="CafeSwap">CafeSwap</option>
+  </select>
+  <label><input type="checkbox" id="profitOnlyToggle" checked> Trade only if profitable</label><br>
+  <button onclick="startTrading()">Start</button>
+  <button onclick="stopTrading()">Stop</button>
+</div>
+
+<div class="card">
+  <h3>Transaction Log</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Token</th><th>Buy Router</th><th>Sell Router</th><th>USDC In</th><th>USDC Out</th><th>Est. Profit</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="logBody"></tbody>
+  </table>
+</div>
+
+<script>
+const routers = {
+  QuickSwap: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+  SushiSwap: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+  ApeSwap: "0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607",
+  Dfyn: "0xA102072A4C07F06EC3B4900FDC4C7B80b6c57429",
+  WaultSwap: "0x3a1D87f206D12415f5b0A33E786967680AAb4f6d",
+  Polycat: "0x94930a328162957FF1dd48900aF67B5439336cBD",
+  CafeSwap: "0x9055682E58C74fc8DdBFC55Ad2428aB1F96098Fc"
+};
+
+const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const erc20Abi = [
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)"
+];
+
+let provider, signer, userAddress, intervalId;
+let txCount = 0;
+const slippage = 0.01;
+
+async function connectMetaMask() {
+  if (typeof window.ethereum === 'undefined') {
+    alert("MetaMask is not installed!");
+    return;
+  }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = await provider.getSigner();
+  userAddress = await signer.getAddress();
+  document.getElementById("walletAddress").innerText = userAddress;
+  updateUSDCBalance();
+  updateTokenBalance();
+}
+
+async function updateUSDCBalance() {
+  const usdc = new ethers.Contract(usdcAddress, erc20Abi, provider);
+  const balance = await usdc.balanceOf(userAddress);
+  const decimals = await usdc.decimals();
+  document.getElementById("usdcBalance").innerText = (Number(balance) / 10 ** decimals).toFixed(5);
+}
+
+async function updateTokenBalance() {
+  const tokenAddress = document.getElementById("tokenAddress").value.trim();
+  if (!ethers.isAddress(tokenAddress)) {
+    document.getElementById("tokenBalance").innerText = "N/A";
+    return;
+  }
+  try {
+    const token = new ethers.Contract(tokenAddress, erc20Abi, provider);
+    const [balance, decimals, symbol] = await Promise.all([
+      token.balanceOf(userAddress),
+      token.decimals(),
+      token.symbol()
+    ]);
+    document.getElementById("tokenBalance").innerText = `${(Number(balance) / 10 ** decimals).toFixed(5)} ${symbol}`;
+  } catch {
+    document.getElementById("tokenBalance").innerText = "N/A";
+  }
+}
+
+function startTrading() {
+  if (!intervalId) intervalId = setInterval(runArbitrage, 10000);
+}
+function stopTrading() {
+  clearInterval(intervalId);
+  intervalId = null;
+}
+
+async function approveIfNeeded(tokenAddress, spender, amount) {
+  const token = new ethers.Contract(tokenAddress, erc20Abi, signer);
+  const allowance = await token.allowance(userAddress, spender);
+  if (allowance < amount) {
+    const tx = await token.approve(spender, ethers.MaxUint256);
+    await tx.wait();
+  }
+}
+
+async function runArbitrage() {
+  const tokenAddress = document.getElementById("tokenAddress").value.trim();
+  const usdcAmount = parseFloat(document.getElementById("usdcAmount").value);
+  const buyRouterName = document.getElementById("buyRouter").value;
+  const sellRouterName = document.getElementById("sellRouter").value;
+  const profitOnly = document.getElementById("profitOnlyToggle").checked;
+
+  if (!ethers.isAddress(tokenAddress) || usdcAmount <= 0) return;
+
+  const buyRouter = new ethers.Contract(routers[buyRouterName], ["function getAmountsOut(uint,address[]) view returns (uint[])","function swapExactTokensForTokens(uint,uint,address[],address,uint)"], signer);
+  const sellRouter = new ethers.Contract(routers[sellRouterName], ["function getAmountsOut(uint,address[]) view returns (uint[])","function swapExactTokensForTokens(uint,uint,address[],address,uint)"], signer);
+
+  const usdc = new ethers.Contract(usdcAddress, erc20Abi, provider);
+  const token = new ethers.Contract(tokenAddress, erc20Abi, provider);
+
+  const [usdcDec, tokenDec, symbol] = await Promise.all([usdc.decimals(), token.decimals(), token.symbol()]);
+  const amountIn = ethers.parseUnits(usdcAmount.toString(), usdcDec);
+  const buyPath = [usdcAddress, tokenAddress];
+  const sellPath = [tokenAddress, usdcAddress];
+
+  try {
+    const tokenOut = (await buyRouter.getAmountsOut(amountIn, buyPath))[1];
+    const usdcBack = (await sellRouter.getAmountsOut(tokenOut, sellPath))[1];
+    const profit = usdcBack - amountIn;
+    const profitDisplay = Number(profit) / 10 ** usdcDec;
+
+    if (profitOnly && profit <= 0n) {
+      logRow(symbol, buyRouterName, sellRouterName, usdcAmount, "-", "0.0000", "Skipped", "red");
+      return;
+    }
+
+    await approveIfNeeded(usdcAddress, routers[buyRouterName], amountIn);
+    const buyTx = await buyRouter.swapExactTokensForTokens(amountIn, tokenOut * BigInt(1 - slippage), buyPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
+    await buyTx.wait();
+
+    await new Promise(r => setTimeout(r, 8000));
+
+    const actualTokenBal = await token.balanceOf(userAddress);
+    await approveIfNeeded(tokenAddress, routers[sellRouterName], actualTokenBal);
+
+    const sellTx = await sellRouter.swapExactTokensForTokens(actualTokenBal, 0, sellPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
+    await sellTx.wait();
+
+    updateUSDCBalance();
+    updateTokenBalance();
+
+    logRow(symbol, buyRouterName, sellRouterName, usdcAmount, (Number(usdcBack) / 10 ** usdcDec).toFixed(4), profitDisplay.toFixed(4), "Success ✅", "green");
+  } catch (err) {
+    console.error("Error:", err);
+    logRow(symbol, buyRouterName, sellRouterName, usdcAmount, "-", "-", `Error: ${err.message}`, "red");
+  }
+}
+
+function logRow(token, buy, sell, usdcIn, usdcOut, profit, status, className) {
+  txCount++;
+  document.getElementById("logBody").insertAdjacentHTML("afterbegin", `
+    <tr class="${className}">
+      <td>${txCount}</td>
+      <td>${token}</td>
+      <td>${buy}</td>
+      <td>${sell}</td>
+      <td>${usdcIn}</td>
+      <td>${usdcOut}</td>
+      <td>${profit}</td>
+      <td>${status}</td>
+    </tr>
+  `);
+}
+</script>
+
+</body>
+</html>
