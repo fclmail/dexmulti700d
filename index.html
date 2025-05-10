@@ -90,11 +90,11 @@ const erc20Abi = [
 
 let provider, signer, userAddress, intervalId;
 let txCount = 0;
-const slippage = 0.01;
+const slippagePercent = 1; // 1% slippage
 
 async function connectMetaMask() {
-  if (typeof window.ethereum === 'undefined') {
-    alert("MetaMask is not installed!");
+  if (!window.ethereum) {
+    alert("MetaMask is not installed.");
     return;
   }
   provider = new ethers.BrowserProvider(window.ethereum);
@@ -110,7 +110,7 @@ async function updateUSDCBalance() {
   const usdc = new ethers.Contract(usdcAddress, erc20Abi, provider);
   const balance = await usdc.balanceOf(userAddress);
   const decimals = await usdc.decimals();
-  document.getElementById("usdcBalance").innerText = (Number(balance) / 10 ** decimals).toFixed(5);
+  document.getElementById("usdcBalance").innerText = ethers.formatUnits(balance, decimals);
 }
 
 async function updateTokenBalance() {
@@ -126,7 +126,7 @@ async function updateTokenBalance() {
       token.decimals(),
       token.symbol()
     ]);
-    document.getElementById("tokenBalance").innerText = `${(Number(balance) / 10 ** decimals).toFixed(5)} ${symbol}`;
+    document.getElementById("tokenBalance").innerText = `${ethers.formatUnits(balance, decimals)} ${symbol}`;
   } catch {
     document.getElementById("tokenBalance").innerText = "N/A";
   }
@@ -173,7 +173,7 @@ async function runArbitrage() {
     const tokenOut = (await buyRouter.getAmountsOut(amountIn, buyPath))[1];
     const usdcBack = (await sellRouter.getAmountsOut(tokenOut, sellPath))[1];
     const profit = usdcBack - amountIn;
-    const profitDisplay = Number(profit) / 10 ** usdcDec;
+    const profitDisplay = ethers.formatUnits(profit, usdcDec);
 
     if (profitOnly && profit <= 0n) {
       logRow(symbol, buyRouterName, sellRouterName, usdcAmount, "-", "0.0000", "Skipped", "red");
@@ -181,7 +181,8 @@ async function runArbitrage() {
     }
 
     await approveIfNeeded(usdcAddress, routers[buyRouterName], amountIn);
-    const buyTx = await buyRouter.swapExactTokensForTokens(amountIn, tokenOut * BigInt(1 - slippage), buyPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
+    const slippageBN = tokenOut * BigInt(100 - slippagePercent) / 100n;
+    const buyTx = await buyRouter.swapExactTokensForTokens(amountIn, slippageBN, buyPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
     await buyTx.wait();
 
     await new Promise(r => setTimeout(r, 8000));
@@ -189,13 +190,13 @@ async function runArbitrage() {
     const actualTokenBal = await token.balanceOf(userAddress);
     await approveIfNeeded(tokenAddress, routers[sellRouterName], actualTokenBal);
 
-    const sellTx = await sellRouter.swapExactTokensForTokens(actualTokenBal, 0, sellPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
+    const sellTx = await sellRouter.swapExactTokensForTokens(actualTokenBal, 0n, sellPath, userAddress, BigInt(Math.floor(Date.now() / 1000) + 60));
     await sellTx.wait();
 
     updateUSDCBalance();
     updateTokenBalance();
 
-    logRow(symbol, buyRouterName, sellRouterName, usdcAmount, (Number(usdcBack) / 10 ** usdcDec).toFixed(4), profitDisplay.toFixed(4), "Success ✅", "green");
+    logRow(symbol, buyRouterName, sellRouterName, usdcAmount, ethers.formatUnits(usdcBack, usdcDec), profitDisplay, "Success ✅", "green");
   } catch (err) {
     console.error("Error:", err);
     logRow(symbol, buyRouterName, sellRouterName, usdcAmount, "-", "-", `Error: ${err.message}`, "red");
@@ -221,3 +222,4 @@ function logRow(token, buy, sell, usdcIn, usdcOut, profit, status, className) {
 
 </body>
 </html>
+
